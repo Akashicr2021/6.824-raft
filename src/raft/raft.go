@@ -321,6 +321,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			reply.Success = true
 			originLogEntries := rf.log
 			lastNewEntry := 0
+			// 尽管Previndex是0，但follower有更多的日志项，
+			// follower可能接收到了过期的同步日志请求，超出的部分除了不一致的其余不需要替换
+			// 示例：
+			// raft.logs    = prev(0) n x x x
+			// args.entries = prev(0) x x
+			// 更新后
+			// raft.logs    = prev(0) x x x x
 			if args.PrevLogIndex+len(args.Entries) < len(originLogEntries) {
 				lastNewEntry = args.PrevLogIndex + len(args.Entries)
 				for i := 0; i < len(args.Entries); i++ {
@@ -330,10 +337,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 						break
 					}
 				}
-			} else {
+			} else { // 没有以上情况，直接用leader给的日志项替代prevIndex后的日志项
+				// 示例
+				// ref.logs =      prev(0) x x
+				// or ref.logs =   prev(0)
+				// args.entries =  prev(0) x n x
+				// 更新后:
+				// ref.logs =      prev(0) x n x
 				rf.log = append(rf.log[:args.PrevLogIndex], args.Entries...)
 				lastNewEntry = len(rf.log)
 			}
+			// 更新follower所知道的最新的提交的日志的索引
 			// leaderCommit > commitIndex的时候才更新!!!
 			// 惨痛的bug, 否则commitIndex可能变小
 			if args.LeaderCommit > rf.commitIndex {
@@ -411,10 +425,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 					rf.log = append(rf.log[:args.PrevLogIndex], args.Entries...)
 					lastNewEntry = len(rf.log)
 				}
+				// 更新follower所知道的最新的提交的日志的索引
 				if args.LeaderCommit > rf.commitIndex {
 					rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(lastNewEntry)))
 				}
 				rf.persist()
+				// 执行未执行的日志项，执行到最新索引的日志项
 				rf.startApplyLogs()
 			}
 		}
@@ -789,6 +805,7 @@ func (rf *Raft) startAppendEntries() {
 
 func (rf *Raft) startApplyLogs() {
 	// 原先写的是rf.lastApplied = len(rf.log)会很有问题, 错误地认为每次提交都会把所有日志提交完, 其实可能只提交一部分
+	// 执行未执行的cmd，执行到提交的最新的日志
 	for rf.lastApplied < rf.commitIndex {
 		rf.lastApplied++
 		msg := ApplyMsg{}
