@@ -344,6 +344,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			return
 		}
 		//如果当前节点本地的log[]结构中prevLogIndex索引处不含有日志, 则返回(currentTerm, false)
+		// 示例
+		// ref.logs =      x x
+		// args.entries =  x x x prev x n x
 		if len(rf.log) < args.PrevLogIndex {
 			reply.Term = rf.currentTerm
 			reply.Success = false
@@ -372,23 +375,39 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 						break
 					}
 				}
-			} else { //该索引处的任期和PrevLog的任期号一致
+			} else { //该索引处的任期号和PrevLog的任期号一致
 				reply.Term = rf.currentTerm
 				// 可以完成同步
 				reply.Success = true
 				originLogEntries := rf.log
 				lastNewEntry := 0
 				// 必须要有这部分判断, 否则有可能使得当前最新的log被旧的log entries所替代
+				// 尽管follower和leader在PrevLog处是一致的，但follower还有更多的日志项，
+				// follower可能接收到了过期的同步日志请求，超出的部分除了不一致的其余不需要替换
+				// 示例
+				// ref.logs =      x x prev x x x x x
+				// args.entries =  x x prev x n x
+				// 更新后:
+				// ref.logs =      x x prev x n x x x
 				if args.PrevLogIndex+len(args.Entries) < len(originLogEntries) {
+					// 先检查一下要添加的日志项
 					lastNewEntry = args.PrevLogIndex + len(args.Entries)
 					for i := 0; i < len(args.Entries); i++ {
+						// 找到开始不一致的日志项
 						if args.Entries[i] != originLogEntries[args.PrevLogIndex+i] {
+							// 不一致的部分的日志项用leader给的日志项替代，其余保留
 							rf.log = append(rf.log[:args.PrevLogIndex+i], args.Entries[i:]...)
 							lastNewEntry = len(rf.log)
 							break
 						}
 					}
-				} else {
+				} else { // 没有以上情况，直接用leader给的日志项替代prevIndex后的日志项
+					// 示例
+					// ref.logs =      x x prev x x
+					// or ref.logs =   x x prev
+					// args.entries =  x x prev x n x
+					// 更新后:
+					// ref.logs =      x x prev x n x
 					rf.log = append(rf.log[:args.PrevLogIndex], args.Entries...)
 					lastNewEntry = len(rf.log)
 				}
