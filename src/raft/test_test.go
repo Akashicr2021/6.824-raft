@@ -125,6 +125,9 @@ func TestBasicAgree2B(t *testing.T) {
 // 等待一个选举周期完成日志添加和同步
 // 恢复follower连接，能完成日志添加和同步
 // 等待一个选举周期完成日志添加和同步
+// 因为涉及到follower的断开和重启，所以要更新startAppendEntries函数：
+// 1、在发送AppendEntries（heartBeat）之前开始重新选举了，就不是leader了，不能进行发送
+// 2、在唯一的leader发送AppendEntries（heartBeat）时，如果有follower宕机了也没关系，继续向其他follower发送
 func TestFailAgree2B(t *testing.T) {
 	// 建立新的分布式环境，3个server
 	servers := 3
@@ -165,13 +168,20 @@ func TestFailAgree2B(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
+// 2B FailNoAgree测试的完成逻辑
+// 在正常运行的分布式环境中完成日志添加和同步
+// 断开大多数follower，给leader添加一条新日志
+// 等待2个选举周期，由于大多数follower宕机了，我们不能提交该日志，该日志不应该被现存的follower发现已经提交
+// 恢复follower连接，再给leader添加一条新日志，注意由于宕机的server占大多数，所以新leader可能从宕机的服务器中选出
+// 查看新日志是否被leader添加成功
 func TestFailNoAgree2B(t *testing.T) {
+	// 构建新的raft环境
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
 	fmt.Printf("Test (2B): no agreement if too many followers disconnect ...\n")
-
+	// 正常情况下同步完成
 	cfg.one(10, servers)
 
 	// 3 of 5 followers disconnect
@@ -181,22 +191,25 @@ func TestFailNoAgree2B(t *testing.T) {
 	cfg.disconnect((leader + 2) % servers)
 	cfg.disconnect((leader + 3) % servers)
 
+	// leader添加一条日志
 	index, _, ok := cfg.rafts[leader].Start(20)
 	if ok != true {
 		t.Fatalf("leader rejected Start()")
 	}
+	// 这是第二条指令
 	if index != 2 {
 		t.Fatalf("expected index 2, got %v", index)
 	}
-
+	// 等待2次新的选举周期
 	time.Sleep(2 * RaftElectionTimeout)
-
+	// 有多少server发现了第二条提交的指令
 	n, _ := cfg.nCommitted(index)
+	// 在大多数宕机的情况下是不能检测到第二条提交的指令的
 	if n > 0 {
 		t.Fatalf("%v committed but no majority", n)
 	}
 	DPrintf("================ server %d && %d && %d reconnected!!! ================\n", (leader+1)%servers, (leader+2)%servers, (leader+3)%servers)
-	// repair
+	// repair重启这三台follower
 	cfg.connect((leader + 1) % servers)
 	cfg.connect((leader + 2) % servers)
 	cfg.connect((leader + 3) % servers)
@@ -204,11 +217,15 @@ func TestFailNoAgree2B(t *testing.T) {
 	// the disconnected majority may have chosen a leader from
 	// among their own ranks, forgetting index 2.
 	// or perhaps
+	// 可能新的leader是从三台宕机又恢复的server中选出的
 	leader2 := cfg.checkOneLeader()
 	index2, _, ok2 := cfg.rafts[leader2].Start(30)
 	if ok2 == false {
 		t.Fatalf("leader2 rejected Start()")
 	}
+	// 因此index2可以为2，也可以为3
+	// 2代表新leader是从三台宕机又恢复的server中选出的，它们忽视了宕机时被执行的指令
+	// 3代表新leader依旧是旧有的两台server中选出的
 	if index2 < 2 || index2 > 3 {
 		t.Fatalf("unexpected index %v", index2)
 	}

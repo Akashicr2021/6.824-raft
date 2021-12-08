@@ -325,7 +325,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// follower可能接收到了过期的同步日志请求，超出的部分除了不一致的其余不需要替换
 			// 示例：
 			// raft.logs    = prev(0) n x x x
-			// args.entries = prev(0) x x
+			// leader.logs  = prev(0) x x
+			// args.entris  =         x x
 			// 更新后
 			// raft.logs    = prev(0) x x x x
 			if args.PrevLogIndex+len(args.Entries) < len(originLogEntries) {
@@ -341,7 +342,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				// 示例
 				// ref.logs =      prev(0) x x
 				// or ref.logs =   prev(0)
-				// args.entries =  prev(0) x n x
+				// leader.logs  =  prev(0) x n x
+				// args.entries =          x n x
 				// 更新后:
 				// ref.logs =      prev(0) x n x
 				rf.log = append(rf.log[:args.PrevLogIndex], args.Entries...)
@@ -360,7 +362,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		//如果当前节点本地的log[]结构中prevLogIndex索引处不含有日志, 则返回(currentTerm, false)
 		// 示例
 		// ref.logs =      x x
-		// args.entries =  x x x prev x n x
+		// leader.logs =   x x x prev x n x
+		// args.entries =             x n x
 		if len(rf.log) < args.PrevLogIndex {
 			reply.Term = rf.currentTerm
 			reply.Success = false
@@ -400,7 +403,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				// follower可能接收到了过期的同步日志请求，超出的部分除了不一致的其余不需要替换
 				// 示例
 				// ref.logs =      x x prev x x x x x
-				// args.entries =  x x prev x n x
+				// leader.logs =   x x prev x n x
+				// args.entries =           x n x
 				// 更新后:
 				// ref.logs =      x x prev x n x x x
 				if args.PrevLogIndex+len(args.Entries) < len(originLogEntries) {
@@ -419,7 +423,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 					// 示例
 					// ref.logs =      x x prev x x
 					// or ref.logs =   x x prev
-					// args.entries =  x x prev x n x
+					// leader.logs =   x x prev x n x
+					// args.entries =           x n x
 					// 更新后:
 					// ref.logs =      x x prev x n x
 					rf.log = append(rf.log[:args.PrevLogIndex], args.Entries...)
@@ -662,8 +667,8 @@ func (rf *Raft) startRequestVote() {
 					return
 				}
 
-				// 进行这一步判断很有必要, 比如两个goroutine先后进入这个if ok {}判断, 第一个goroutine得到的reply.Term > rf.currentTerm从而转换为Follower并更新了currentTerm
-				// 如果不进行这个判断, 那么第二个goroutine在进行reply.Term > rf.currentTerm判断时会有同步问题, 导致错误地进行后续流程
+				// 进行这一步判断很有必要, 比如两个goroutine(线程)先后进入这个if ok {}判断, 第一个goroutine得到的reply.Term > rf.currentTerm从而转换为Follower并更新了currentTerm
+				// 如果不进行这个判断, 那么第二个goroutine在进行reply.Term > rf.currentTerm判断时会有同步问题, 发现reply.Term == rf.currentTerm导致错误地进行后续流程
 				if rf.currentTerm != args.Term || rf.state != Candidate {
 					rf.mu.Unlock()
 					return
@@ -691,6 +696,9 @@ func (rf *Raft) startAppendEntries() {
 		// 这里rf.state == leader的判断很有必要, 见FailAgree2B
 		// 如果某个刚恢复的Follower在心跳到达前开始选举, Leader状态会变为Follower, 更新Term并重新选举
 		rf.mu.Lock()
+		// 常规来说只有状态为leader的raft服务器才能startAppendEntries
+		// 但在FailAgree2B测试中，Leader状态可能会变为Follower
+		// follower不能发送AppendEntries（heartBeat）
 		if rf.state != Leader {
 			rf.mu.Unlock()
 			return
@@ -698,6 +706,7 @@ func (rf *Raft) startAppendEntries() {
 		DPrintf("Leader %d: start sending AppendEntries, current term: %d\n", rf.me, rf.currentTerm)
 		rf.mu.Unlock()
 		for i := 0; i < len(rf.peers); i++ {
+			// heartBeat不发给leader自己
 			go func(ii int) {
 				if ii == rf.me {
 					return
@@ -705,16 +714,24 @@ func (rf *Raft) startAppendEntries() {
 
 				for {
 					rf.mu.Lock()
+					// 如果leader断开了，虽然心跳包发送不会成功，但会在循环中保持发送心跳包，
+					// 重新连上的时候任期已经过了，接收到了新leader的心跳包，转化为follower了。
+					// follower不能发送AppendEntries（heartBeat），返回
 					if rf.state != Leader {
 						rf.mu.Unlock()
 						return
 					}
+					// 发给follower：ii的最后一条日志项的索引
 					prevLogIndex := rf.nextIndex[ii] - 1
+					// 还没给follower：ii发过日志，则没有prevLog，任期号也就是0
 					prevLogTerm := 0
 					if prevLogIndex > 0 {
+						// 找到prevLog的任期号
 						prevLogTerm = rf.log[prevLogIndex-1].Term
 					}
+					// 从已经发送完的最后一条日志项开始，剩余的日志项都发送给follower：ii
 					entries := append([]Entry{}, rf.log[rf.nextIndex[ii]-1:]...)
+					// 发送参数
 					args := AppendEntriesArgs{
 						Term:         rf.currentTerm,
 						LeaderId:     rf.me,
@@ -723,8 +740,10 @@ func (rf *Raft) startAppendEntries() {
 						Entries:      entries,
 						LeaderCommit: rf.commitIndex,
 					}
+					// 接收反馈信息的结构体
 					reply := AppendEntriesReply{}
 					rf.mu.Unlock()
+					// 发送
 					ok := rf.sendAppendEntries(ii, &args, &reply)
 					// DPrintf("Leader %d: send heartbeat to server %d, got reply:%v\n", rf.me, ii, reply)
 					// 如果ok==false, 代表心跳包没发送出去, 有两种可能: 1. 该Leader失去连接 2. 接受心跳包的Follower失去连接
@@ -733,6 +752,7 @@ func (rf *Raft) startAppendEntries() {
 					// 由上面的分析, 可知不需要对isok == false做特殊处理
 					if ok {
 						rf.mu.Lock()
+						// 知道自己不是最新的leader了
 						if reply.Term > rf.currentTerm {
 							// 退出循环, 转换为follower
 							DPrintf("Leader %d: turn back to follower due to existing higher term %d from server %d\n", rf.me, reply.Term, ii)
@@ -741,16 +761,19 @@ func (rf *Raft) startAppendEntries() {
 							return
 						}
 						// 进行这一步判断很有必要, 比如两个goroutine先后进入这个if ok {}判断, 第一个goroutine得到的reply.Term > rf.currentTerm从而转换为Follower并更新了currentTerm
-						// 如果不进行这个判断, 那么第二个goroutine在进行reply.Term > rf.currentTerm判断时会有同步问题, 导致错误地进行后续流程
+						// 如果不进行这个判断, 那么第二个goroutine在进行reply.Term > rf.currentTerm判断时会有reply.Term == rf.currentTerm，导致错误地进行后续流程
 						if rf.currentTerm != args.Term || rf.state != Leader {
 							rf.mu.Unlock()
 							return
 						}
+						// 成功同步了follower：ii
 						if reply.Success == true {
 							// 虽然暂时这样写没啥问题, 但根据students-guide-to-raft中分析可知这行代码并不安全(This is not safe because those values could have been updated since when you sent the RPC)
 							// 所以改成更新完matchIndex再更新nextIndex
 							// rf.nextIndex[ii] = len(rf.log) + 1
+							// follower:ii中和leader的log可以匹配的日志的最高索引
 							rf.matchIndex[ii] = prevLogIndex + len(entries)
+							// 那下一个要发给 follower:ii的日志的起始位置就是matchIndex[ii] + 1
 							rf.nextIndex[ii] = rf.matchIndex[ii] + 1
 							// paper中Figure 8的情形, 这个实现很妙!
 							copyMatchIndex := make([]int, len(rf.peers))
@@ -765,29 +788,46 @@ func (rf *Raft) startAppendEntries() {
 							rf.startApplyLogs()
 							rf.mu.Unlock()
 							return
-						} else {
+						} else { // 没有成功同步follower：ii
 							// 优化逻辑
 							hasTermEuqalConflictTerm := false
 							for i := 0; i < len(rf.log); i++ {
 								if rf.log[i].Term == reply.ConflictTerm {
+									// 在leader中有日志项和follower ii的prev位置的日志项任期号是相同的
 									hasTermEuqalConflictTerm = true
 								}
+								// 该日志项的任期号大于follower ii的prev位置的日志项任期号
+								// 说明该日志项是follower ii还没有的，
+								// 因为follower ii的prev位置的日志项任期号已经是follower最大的任期号了
 								if rf.log[i].Term > reply.ConflictTerm {
+									// 在该log之前的日志项中有和follower ii的prev位置的日志项任期号是相同的
 									if hasTermEuqalConflictTerm {
+										// 下一个要发送给follower ii的就是leader的该条日志
+										// 示例：
+										// fol.logs =    1 1 1 2 2(prev)
+										// leader.logs = 1 1 1 3 3(prev) 3 3 ...
+										// 要发的entries        3 3       3 3 ...
 										rf.nextIndex[ii] = i
-									} else {
+									} else { // 对应的是follower ii prevIndex位置还没日志的情况,ConflictTerm为-1
+										// 下一个要发送给follower ii的是follower ii的len(log)位置的日志项
+										// 示例
+										// fol.logs =      x x
+										// leader.logs =   x x x prev x n x
+										// args.entries =             x n x
+										// 要发的entries为：     x prev x n x
 										rf.nextIndex[ii] = reply.ConflictIndex
 									}
 									break
 								}
+								// 不存在follower有日志项任期号比leader还大的情况
 							}
-							//rf.nextIndex[ii] --
+							// nextIndex[ii]不能小于1
 							if rf.nextIndex[ii] < 1 {
 								rf.nextIndex[ii] = 1
 							}
 							rf.mu.Unlock()
 						}
-					} else {
+					} else { //leader发送心跳包失败
 						DPrintf("Leader %d: sending AppendEntries to server %d failed\n", rf.me, ii)
 						return
 					}
@@ -799,6 +839,7 @@ func (rf *Raft) startAppendEntries() {
 		// a. 选举超时: 150ms-300ms, 领导者心跳: 50ms
 		// b. 选举超时: 200ms-400ms, 领导者心跳: 100ms
 		// ref: https://github.com/springfieldking/mit-6.824-golabs-2018/issues/1
+		// 心跳包发送间隙
 		time.Sleep(100 * time.Millisecond)
 	}
 }
