@@ -401,31 +401,48 @@ func (cfg *config) one(cmd int, expectedServers int) int {
 		// try all the servers, maybe one is the leader.
 		index := -1
 		for si := 0; si < cfg.n; si++ {
+			// 遍历各个server
 			starts = (starts + 1) % cfg.n
 			var rf *Raft
+			// 进程锁
 			cfg.mu.Lock()
+			// 连接该raft服务器
 			if cfg.connected[starts] {
 				rf = cfg.rafts[starts]
 			}
+			// 解锁
 			cfg.mu.Unlock()
+			// 连接成功
 			if rf != nil {
+				// 添加日志，leader应该是最先添加的，
+				// start函数由我们填写，返回值是这个添加的日志的index
 				index1, _, ok := rf.Start(cmd)
+				// 说明是leader
 				if ok {
+					// 更新index
 					index = index1
 					break
 				}
 			}
 		}
-
+		// leader把序号为index的日志添加了
 		if index != -1 {
+			// 该cmd被提交后的序号应该是index
 			DPrintf("Command %d: should be in index %d if it's committed\n", cmd, index)
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
 			t1 := time.Now()
+			// 在这个循环里等待leader把日志同步给各个server（2s）
+			// 可能同步失败的原因：这是个错误的leader（宕机后重启了，状态还是leader），因此不可能完成同步，
+			// 如果是错误的leader就会进入下一个循环找leader，错误的leader在heatBeat通信中会被纠正为follower
+			// 在本project中，hearBeat处理函数和日志处理函数统一了（AppendEntries），
+			// heartBeat在raft协议构建时就开始了，因此我们还需要补充日志处理函数。
 			for time.Since(t1).Seconds() < 2 {
+				// 现在有多少raft server发现cmd已经提交
 				nd, cmd1 := cfg.nCommitted(index)
+				// 大部分都已经发现序号为index的指令已经提交
 				if nd > 0 && nd >= expectedServers {
-					// committed
+					// committed，一致性协议达成
 					if cmd2, ok := cmd1.(int); ok && cmd2 == cmd {
 						// and it was the command we submitted.
 						return index
@@ -433,10 +450,11 @@ func (cfg *config) one(cmd int, expectedServers int) int {
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
-		} else {
+		} else { //日志没同步成功，循环继续
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
+	// 一致性迟迟没有达成
 	cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 	return -1
 }

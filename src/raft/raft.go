@@ -28,8 +28,6 @@ import (
 	"time"
 )
 
-
-
 //
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -42,12 +40,12 @@ type ApplyMsg struct {
 	Snapshot    []byte // ignore for lab2; only used in lab3
 }
 
-
 const (
-	Follower   string = "follower"
-	Candidate         = "candidate"
-	Leader            = "leader"
+	Follower  string = "follower"
+	Candidate        = "candidate"
+	Leader           = "leader"
 )
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -62,24 +60,24 @@ type Raft struct {
 	// state a Raft server must maintain.
 
 	// persistent state on all servers
-	currentTerm      int
-	votedFor         int
-	log 		     []Entry
+	currentTerm int
+	votedFor    int
+	log         []Entry
 	// volatile state on all servers
-	commitIndex      int
-	lastApplied      int
+	commitIndex int
+	lastApplied int
 	// volatile state on leaders
-	nextIndex        []int
-	matchIndex		 []int
+	nextIndex  []int
+	matchIndex []int
 	// some other self-added states
-	state            string
-	electionTimeout  int
-	applyCh          chan ApplyMsg
-	grantVoteCh      chan bool
-	heartBeatCh      chan bool
-	leaderCh         chan bool
-	totalVotes       int
-	timer            *time.Timer
+	state           string
+	electionTimeout int
+	applyCh         chan ApplyMsg
+	grantVoteCh     chan bool
+	heartBeatCh     chan bool
+	leaderCh        chan bool
+	totalVotes      int
+	timer           *time.Timer
 }
 
 // return currentTerm and whether this server
@@ -161,8 +159,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	Term         int
-	VoteGranted  bool
+	Term        int
+	VoteGranted bool
 }
 
 //
@@ -265,24 +263,35 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	DPrintf("======= server %d got RequestVote from candidate %d, args: %+v, current log: %v, reply: %+v =======\n", rf.me, args.CandidateId, args, rf.log, reply)
 }
 
-
+// 需要添加的日志的 RPC
+// 由leader唤起，用法和heartbeat包一样
 type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
+	// leader的任期号
+	Term int
+	// leader的id
+	LeaderId int
+	// 上一条日志的序号
 	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      []Entry
+	// 上一条日志的任期号
+	PrevLogTerm int
+	// 准备添加的日志条目
+	// 表示heatbeat时为空
+	// 可以同时添加多条日志
+	Entries []Entry
+	// 领导人已经提交的日志序号
 	LeaderCommit int
 }
 
+// reply信息的结构体
 type AppendEntriesReply struct {
-	Term          int
-	Success       bool
+	Term    int
+	Success bool
 	// optimization: accelerated log backtracking
 	ConflictTerm  int
 	ConflictIndex int
 }
 
+// follower收到日志处理命令时的动作
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
@@ -301,8 +310,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			originLogEntries := rf.log
 			lastNewEntry := 0
 			if args.PrevLogIndex+len(args.Entries) < len(originLogEntries) {
-				lastNewEntry = args.PrevLogIndex+len(args.Entries)
-				for i:=0; i<len(args.Entries); i++ {
+				lastNewEntry = args.PrevLogIndex + len(args.Entries)
+				for i := 0; i < len(args.Entries); i++ {
 					if args.Entries[i] != originLogEntries[args.PrevLogIndex+i] {
 						rf.log = append(rf.log[:args.PrevLogIndex+i], args.Entries[i:]...)
 						lastNewEntry = len(rf.log)
@@ -337,7 +346,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				reply.Term = rf.currentTerm
 				reply.Success = false
 				reply.ConflictTerm = prevLogTerm
-				for i:=0; i<len(rf.log); i++ {
+				for i := 0; i < len(rf.log); i++ {
 					if rf.log[i].Term == prevLogTerm {
 						reply.ConflictIndex = i + 1
 						break
@@ -350,8 +359,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				lastNewEntry := 0
 				// 必须要有这部分判断, 否则有可能使得当前最新的log被旧的log entries所替代
 				if args.PrevLogIndex+len(args.Entries) < len(originLogEntries) {
-					lastNewEntry = args.PrevLogIndex+len(args.Entries)
-					for i:=0; i<len(args.Entries); i++ {
+					lastNewEntry = args.PrevLogIndex + len(args.Entries)
+					for i := 0; i < len(args.Entries); i++ {
 						if args.Entries[i] != originLogEntries[args.PrevLogIndex+i] {
 							rf.log = append(rf.log[:args.PrevLogIndex+i], args.Entries[i:]...)
 							lastNewEntry = len(rf.log)
@@ -424,8 +433,9 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
-//
+
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	// 锁进程
 	rf.mu.Lock()
 	index := -1
 	term := rf.currentTerm
@@ -434,11 +444,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// 一开始可能会选错leader(比如某个leader失去连接后又恢复(状态还是保持在Leader), 这种情况下会在后续该节点发出心跳包后转为Follower, 在重新确定出Leader后开始一轮新的Start操作)
 	if isLeader {
 		DPrintf("Leader %d: got a new Start task, command: %v\n", rf.me, command)
+		// 添加到leader的日志里，同时记录任期号，索引值
 		rf.log = append(rf.log, Entry{rf.currentTerm, command})
 		index = len(rf.log)
+		// save Raft's persistent state to stable storage
 		rf.persist()
 	}
+	// 解锁
 	rf.mu.Unlock()
+	// 如果这个raft服务器不是leader，则isleader会返回false，因为leader最先添加日志
 	return index, term, isLeader
 }
 
@@ -453,8 +467,8 @@ func (rf *Raft) Kill() {
 }
 
 type Entry struct {
-	Term        int
-	Command     interface{}
+	Term    int
+	Command interface{}
 }
 
 //
@@ -542,7 +556,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					rf.mu.Unlock()
 				}
 			}
-			
+
 		}
 	}()
 
@@ -551,7 +565,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 func GenerateElectionTimeout(min, max int) int {
 	rad := rand.New(rand.NewSource(time.Now().UnixNano()))
-	randNum := rad.Intn(max - min) + min
+	randNum := rad.Intn(max-min) + min
 	return randNum
 }
 
@@ -577,7 +591,7 @@ func (rf *Raft) startRequestVote() {
 	}
 	nLeader := 0
 	rf.mu.Unlock()
-	for i := 0; i < len(rf.peers); i ++ {
+	for i := 0; i < len(rf.peers); i++ {
 		go func(ii int) {
 			if ii == rf.me {
 				return
@@ -600,9 +614,9 @@ func (rf *Raft) startRequestVote() {
 				}
 
 				if reply.VoteGranted {
-					rf.totalVotes ++
+					rf.totalVotes++
 					if nLeader == 0 && rf.totalVotes > len(rf.peers)/2 && rf.state == Candidate {
-						nLeader ++
+						nLeader++
 						rf.convertToLeader()
 						// 之前一个找了好久的bug: setLeaderCh里没有启一个新的goroutine, 可能导致阻塞, 进而造成死锁
 						rf.setLeaderCh()
@@ -627,7 +641,7 @@ func (rf *Raft) startAppendEntries() {
 		}
 		DPrintf("Leader %d: start sending AppendEntries, current term: %d\n", rf.me, rf.currentTerm)
 		rf.mu.Unlock()
-		for i := 0; i < len(rf.peers); i ++ {
+		for i := 0; i < len(rf.peers); i++ {
 			go func(ii int) {
 				if ii == rf.me {
 					return
@@ -639,18 +653,18 @@ func (rf *Raft) startAppendEntries() {
 						rf.mu.Unlock()
 						return
 					}
-					prevLogIndex := rf.nextIndex[ii]-1
+					prevLogIndex := rf.nextIndex[ii] - 1
 					prevLogTerm := 0
 					if prevLogIndex > 0 {
 						prevLogTerm = rf.log[prevLogIndex-1].Term
 					}
 					entries := append([]Entry{}, rf.log[rf.nextIndex[ii]-1:]...)
 					args := AppendEntriesArgs{
-						Term: rf.currentTerm,
-						LeaderId: rf.me,
+						Term:         rf.currentTerm,
+						LeaderId:     rf.me,
 						PrevLogIndex: prevLogIndex,
-						PrevLogTerm: prevLogTerm,
-						Entries: entries,
+						PrevLogTerm:  prevLogTerm,
+						Entries:      entries,
 						LeaderCommit: rf.commitIndex,
 					}
 					reply := AppendEntriesReply{}
@@ -689,7 +703,7 @@ func (rf *Raft) startAppendEntries() {
 							sort.Ints(copyMatchIndex)
 							N := copyMatchIndex[len(rf.peers)/2]
 							if N > rf.commitIndex && rf.log[N-1].Term == rf.currentTerm {
-								rf.commitIndex =  N
+								rf.commitIndex = N
 							}
 							DPrintf("Leader %d: start applying logs, lastApplied: %d, commitIndex: %d\n", rf.me, rf.lastApplied, rf.commitIndex)
 							rf.startApplyLogs()
@@ -698,7 +712,7 @@ func (rf *Raft) startAppendEntries() {
 						} else {
 							// 优化逻辑
 							hasTermEuqalConflictTerm := false
-							for i:=0; i<len(rf.log); i++ {
+							for i := 0; i < len(rf.log); i++ {
 								if rf.log[i].Term == reply.ConflictTerm {
 									hasTermEuqalConflictTerm = true
 								}
@@ -735,8 +749,8 @@ func (rf *Raft) startAppendEntries() {
 
 func (rf *Raft) startApplyLogs() {
 	// 原先写的是rf.lastApplied = len(rf.log)会很有问题, 错误地认为每次提交都会把所有日志提交完, 其实可能只提交一部分
-	for rf.lastApplied < rf.commitIndex{
-		rf.lastApplied ++
+	for rf.lastApplied < rf.commitIndex {
+		rf.lastApplied++
 		msg := ApplyMsg{}
 		msg.Index = rf.lastApplied
 		msg.Command = rf.log[rf.lastApplied-1].Command
@@ -754,7 +768,7 @@ func (rf *Raft) convertToFollower(term int, voteFor int) {
 
 func (rf *Raft) convertToCandidate() {
 	rf.state = Candidate
-	rf.currentTerm ++
+	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.totalVotes = 1
 	rf.electionTimeout = GenerateElectionTimeout(200, 400)
@@ -766,7 +780,7 @@ func (rf *Raft) convertToLeader() {
 	rf.state = Leader
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
-	for i:=0; i<len(rf.peers); i++ {
+	for i := 0; i < len(rf.peers); i++ {
 		rf.nextIndex[i] = len(rf.log) + 1
 		rf.matchIndex[i] = 0
 	}

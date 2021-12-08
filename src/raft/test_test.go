@@ -60,14 +60,14 @@ func TestReElection2A(t *testing.T) {
 	leader2 := cfg.checkOneLeader()
 	// if there's no quorum, no leader should
 	// be elected.
-	DPrintf("================ server %d && %d disconnenct!!! ================\n", leader2, (leader2 + 1) % servers)
+	DPrintf("================ server %d && %d disconnenct!!! ================\n", leader2, (leader2+1)%servers)
 	cfg.disconnect(leader2)
 	cfg.disconnect((leader2 + 1) % servers)
 	time.Sleep(2 * RaftElectionTimeout)
 	cfg.checkNoLeader()
 
 	// if a quorum arises, it should elect a leader.
-	DPrintf("================ server %d reconnenct!!! ================\n", (leader2 + 1) % servers)
+	DPrintf("================ server %d reconnenct!!! ================\n", (leader2+1)%servers)
 	cfg.connect((leader2 + 1) % servers)
 	cfg.checkOneLeader()
 
@@ -79,20 +79,36 @@ func TestReElection2A(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
+// 2B BasicAgreement测试的完成逻辑
+// 1、要添加一个新日志需要先找到leader，因为leader最先添加日志
+// 2、所以第一个要完成的函数是raft.start()：如果该raft服务器不是leader，会返回false，继续找leader
+// 如果是leader，start()函数把日志添加进leader的日志列表，同时附上日志的索引值和任期号。
+// 3、接下来等待leader将日志同步给follower，如果大部分follower都确认该日志提交了，测试通过。
+// 4、什么情况下同步会失败呢？那就是找到了错误的leader（先宕机后重启，状态还是leader没改成follower），
+// 这个时候就等待heartBeat处理，在heartBeat中把状态改成follower，heartBeat进程在make函数中已经开始了
+// 5、所以第二个要完成的函数是服务器对heartBeat的处理函数（本project中是AppendEntries函数）
+// 状态更新后就能找到准确的leader了，测试通过。
 func TestBasicAgree2B(t *testing.T) {
+	// 创建五个server
 	servers := 5
 	cfg := make_config(t, servers, false)
+	// 重置变量
 	defer cfg.cleanup()
 
 	fmt.Printf("Test (2B): basic agreement ...\n")
 
+	// 测试逐步添加三个新日志
 	iters := 3
 	for index := 1; index < iters+1; index++ {
+		// 有多少server认为序号为index的日志已经提交了
 		nd, _ := cfg.nCommitted(index)
+		// 事实上，序号为index的日志正打算添加，所以不应该有sever发现index已经提交了
 		if nd > 0 {
 			t.Fatalf("some have committed before Start()")
 		}
+		// 发送序号为index的指令给各个服务器，（leader最先收到，然后同步给follower）完成一次一致性检查
 		xindex := cfg.one(index*100, servers)
+		// 说明没达成一致性
 		if xindex != index {
 			t.Fatalf("got index %v but expected %v", xindex, index)
 		}
@@ -112,7 +128,7 @@ func TestFailAgree2B(t *testing.T) {
 
 	// follower network disconnection
 	leader := cfg.checkOneLeader()
-	DPrintf("================ server %d disconnected!!! ================\n", (leader + 1) % servers)
+	DPrintf("================ server %d disconnected!!! ================\n", (leader+1)%servers)
 	cfg.disconnect((leader + 1) % servers)
 
 	// agree despite one disconnected server?
@@ -122,7 +138,7 @@ func TestFailAgree2B(t *testing.T) {
 	cfg.one(104, servers-1)
 	cfg.one(105, servers-1)
 	// re-connect
-	DPrintf("================ server %d reconnected!!! ================\n", (leader + 1) % servers)
+	DPrintf("================ server %d reconnected!!! ================\n", (leader+1)%servers)
 	cfg.connect((leader + 1) % servers)
 	// agree with full set of servers?
 	cfg.one(106, servers)
@@ -143,7 +159,7 @@ func TestFailNoAgree2B(t *testing.T) {
 
 	// 3 of 5 followers disconnect
 	leader := cfg.checkOneLeader()
-	DPrintf("================ server %d && %d && %d disconnected!!! ================\n", (leader + 1) % servers, (leader + 2) % servers, (leader + 3) % servers)
+	DPrintf("================ server %d && %d && %d disconnected!!! ================\n", (leader+1)%servers, (leader+2)%servers, (leader+3)%servers)
 	cfg.disconnect((leader + 1) % servers)
 	cfg.disconnect((leader + 2) % servers)
 	cfg.disconnect((leader + 3) % servers)
@@ -162,7 +178,7 @@ func TestFailNoAgree2B(t *testing.T) {
 	if n > 0 {
 		t.Fatalf("%v committed but no majority", n)
 	}
-	DPrintf("================ server %d && %d && %d reconnected!!! ================\n", (leader + 1) % servers, (leader + 2) % servers, (leader + 3) % servers)
+	DPrintf("================ server %d && %d && %d reconnected!!! ================\n", (leader+1)%servers, (leader+2)%servers, (leader+3)%servers)
 	// repair
 	cfg.connect((leader + 1) % servers)
 	cfg.connect((leader + 2) % servers)
@@ -339,7 +355,7 @@ func TestBackup2B(t *testing.T) {
 
 	// put leader and one follower in a partition
 	leader1 := cfg.checkOneLeader()
-	DPrintf("================ server %d && %d && %d disconnected!!! ================\n", (leader1 + 2) % servers, (leader1 + 3) % servers, (leader1 + 4) % servers)
+	DPrintf("================ server %d && %d && %d disconnected!!! ================\n", (leader1+2)%servers, (leader1+3)%servers, (leader1+4)%servers)
 	cfg.disconnect((leader1 + 2) % servers)
 	cfg.disconnect((leader1 + 3) % servers)
 	cfg.disconnect((leader1 + 4) % servers)
@@ -351,12 +367,12 @@ func TestBackup2B(t *testing.T) {
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
-	DPrintf("================ server %d && %d disconnected!!! ================\n", (leader1 + 0) % servers, (leader1 + 1) % servers)
+	DPrintf("================ server %d && %d disconnected!!! ================\n", (leader1+0)%servers, (leader1+1)%servers)
 	cfg.disconnect((leader1 + 0) % servers)
 	cfg.disconnect((leader1 + 1) % servers)
 
 	// allow other partition to recover
-	DPrintf("================ server %d && %d && %d reconnected!!! ================\n", (leader1 + 2) % servers, (leader1 + 3) % servers, (leader1 + 4) % servers)
+	DPrintf("================ server %d && %d && %d reconnected!!! ================\n", (leader1+2)%servers, (leader1+3)%servers, (leader1+4)%servers)
 	cfg.connect((leader1 + 2) % servers)
 	cfg.connect((leader1 + 3) % servers)
 	cfg.connect((leader1 + 4) % servers)
@@ -379,7 +395,7 @@ func TestBackup2B(t *testing.T) {
 	// lots more commands that won't commit
 	for i := 0; i < 5; i++ {
 		//cfg.rafts[leader2].Start(rand.Int())
-		cfg.rafts[leader2].Start(i+100)
+		cfg.rafts[leader2].Start(i + 100)
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
@@ -388,7 +404,7 @@ func TestBackup2B(t *testing.T) {
 	for i := 0; i < servers; i++ {
 		cfg.disconnect(i)
 	}
-	DPrintf("================ server %d && %d && %d reconnected!!! ================\n", (leader1 + 0) % servers, (leader1 + 1) % servers, other)
+	DPrintf("================ server %d && %d && %d reconnected!!! ================\n", (leader1+0)%servers, (leader1+1)%servers, other)
 	cfg.connect((leader1 + 0) % servers)
 	cfg.connect((leader1 + 1) % servers)
 	cfg.connect(other)
