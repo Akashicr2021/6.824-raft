@@ -284,28 +284,40 @@ type AppendEntriesArgs struct {
 
 // reply信息的结构体
 type AppendEntriesReply struct {
-	Term    int
+	// 返回的任期号，方便leader知道自己是否过期
+	Term int
+	// 同步日志有没有成功
 	Success bool
-	// optimization: accelerated log backtracking
-	ConflictTerm  int
+	// 有日志矛盾，
+	// 矛盾的日志任期号
+	ConflictTerm int
+	// 矛盾的日志索引值
 	ConflictIndex int
 }
 
-// follower收到日志处理命令时的动作
+// raft服务器收到日志处理/heartBeat命令时的动作
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	DPrintf("Server %d: got AppendEntries from leader %d, args: %+v, current term: %d, current commitIndex: %d, current log: %v\n", rf.me, args.LeaderId, args, rf.currentTerm, rf.commitIndex, rf.log)
+	// 判断日志Term任期号和服务器所知道的leaderTerm任期号的大小 前者小于后者的话代表该日志的任期号过期了，拒绝添加该日志
 	if args.Term < rf.currentTerm {
+		// 告诉发过来的leader，你已经不是leader了，任期号过期了
 		reply.Term = rf.currentTerm
 		reply.Success = false
-	} else {
+	} else { //大于的话改变节点状态
+		// 正在处理heartBeat
 		rf.setHeartBeatCh()
+		// 把自己变成follower，follower本来就是follower，
+		// 而错误的leader也会收到真leader发来的heartBeat，把自己变成follower
+		// 转换包括记录leader的任期号，改变自身状态，获得的票数，以及记录leader的id
 		rf.convertToFollower(args.Term, args.LeaderId)
 		// PrevLogIndex为0表示从头开始appendEntries, 不用进入后续判断, 语义上更好理解
 		if args.PrevLogIndex == 0 {
+			// 回复leader，该raft服务器保存的任期号是多少
 			reply.Term = rf.currentTerm
+			// 日志的同步是成功的
 			reply.Success = true
 			originLogEntries := rf.log
 			lastNewEntry := 0
@@ -331,29 +343,38 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.startApplyLogs()
 			return
 		}
-
+		//如果当前节点本地的log[]结构中prevLogIndex索引处不含有日志, 则返回(currentTerm, false)
 		if len(rf.log) < args.PrevLogIndex {
 			reply.Term = rf.currentTerm
 			reply.Success = false
+			// 报告矛盾的日志的索引值
 			reply.ConflictIndex = len(rf.log)
+			// 矛盾的类型是本地log比leader的log要更短
 			reply.ConflictTerm = -1
 		} else {
 			prevLogTerm := 0
+			// 检查PrevLogIndex处的日志任期号
 			if args.PrevLogIndex > 0 {
 				prevLogTerm = rf.log[args.PrevLogIndex-1].Term
 			}
+			// 任期不一致
 			if args.PrevLogTerm != prevLogTerm {
+				// 返回本地存储的leader任期号
 				reply.Term = rf.currentTerm
+				// 同步失败
 				reply.Success = false
+				// 冲突的任期号
 				reply.ConflictTerm = prevLogTerm
+				// 找到哪个索引的日志任期号和PrevLog的任期号是一致的
 				for i := 0; i < len(rf.log); i++ {
 					if rf.log[i].Term == prevLogTerm {
 						reply.ConflictIndex = i + 1
 						break
 					}
 				}
-			} else {
+			} else { //该索引处的任期和PrevLog的任期号一致
 				reply.Term = rf.currentTerm
+				// 可以完成同步
 				reply.Success = true
 				originLogEntries := rf.log
 				lastNewEntry := 0
@@ -759,9 +780,13 @@ func (rf *Raft) startApplyLogs() {
 }
 
 func (rf *Raft) convertToFollower(term int, voteFor int) {
+	// 更新自己知道的leader的任期号
 	rf.currentTerm = term
+	// 状态变为follower
 	rf.state = Follower
+	// follower是0票
 	rf.totalVotes = 0
+	// leader的id
 	rf.votedFor = voteFor
 	rf.persist()
 }

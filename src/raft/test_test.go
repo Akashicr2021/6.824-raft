@@ -87,6 +87,7 @@ func TestReElection2A(t *testing.T) {
 // 4、什么情况下同步会失败呢？那就是找到了错误的leader（先宕机后重启，状态还是leader没改成follower），
 // 这个时候就等待heartBeat处理，在heartBeat中把状态改成follower，heartBeat进程在make函数中已经开始了
 // 5、所以第二个要完成的函数是服务器对heartBeat的处理函数（本project中是AppendEntries函数）
+// 另外同步日志的处理也是AppendEntries函数实现的
 // 状态更新后就能找到准确的leader了，测试通过。
 func TestBasicAgree2B(t *testing.T) {
 	// 创建五个server
