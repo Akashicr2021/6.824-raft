@@ -88,6 +88,7 @@ func TestReElection2A(t *testing.T) {
 // 这个时候就等待heartBeat处理，在heartBeat中把状态改成follower，heartBeat进程在make函数中已经开始了
 // 5、所以第二个要完成的函数是服务器对heartBeat的处理函数（本project中是AppendEntries函数）
 // 另外同步日志的处理也是AppendEntries函数实现的
+// 6、最后一个要更新的函数是startAppendEntries，补充leader接收到heartBeat（AppendEntries）反馈信息后的后续操作
 // 状态更新后就能找到准确的leader了，测试通过。
 func TestBasicAgree2B(t *testing.T) {
 	// 创建五个server
@@ -118,32 +119,47 @@ func TestBasicAgree2B(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
+// 2B FailAgreement测试的完成逻辑
+// 在正常运行的分布式环境中完成日志添加和同步
+// 断开一个follower完成日志添加和同步
+// 等待一个选举周期完成日志添加和同步
+// 恢复follower连接，能完成日志添加和同步
+// 等待一个选举周期完成日志添加和同步
 func TestFailAgree2B(t *testing.T) {
+	// 建立新的分布式环境，3个server
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
 	fmt.Printf("Test (2B): agreement despite follower disconnection ...\n")
-
+	// 完成一次日志的添加与同步
 	cfg.one(101, servers)
 
 	// follower network disconnection
+	// 找到leader
 	leader := cfg.checkOneLeader()
 	DPrintf("================ server %d disconnected!!! ================\n", (leader+1)%servers)
+	// 断开除leader外的一个follower
 	cfg.disconnect((leader + 1) % servers)
 
 	// agree despite one disconnected server?
+	// 依旧能完成日志的添加和同步
 	cfg.one(102, servers-1)
 	cfg.one(103, servers-1)
+	// 等到下一个选举周期完成
 	time.Sleep(RaftElectionTimeout)
+	// 继续能完成日志的添加和同步
 	cfg.one(104, servers-1)
 	cfg.one(105, servers-1)
-	// re-connect
+	// re-connect，重新将follower接通加入
 	DPrintf("================ server %d reconnected!!! ================\n", (leader+1)%servers)
 	cfg.connect((leader + 1) % servers)
 	// agree with full set of servers?
+	// 在所有server上能完成日志的添加和同步
 	cfg.one(106, servers)
+	// 等到下一个选举周期完成
 	time.Sleep(RaftElectionTimeout)
+	// 依旧能完成日志的添加和同步
 	cfg.one(107, servers)
 
 	fmt.Printf("  ... Passed\n")
